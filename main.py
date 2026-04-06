@@ -150,7 +150,7 @@ class TelegramNotifier:
         self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         self.logger = logger
     
-    def send_price_update(self, item_name, cheapest_shop, current_price, previous_price):
+    def send_price_update(self, item_name, cheapest_shop, current_price, previous_price, url):
         """Send price change notification to Telegram."""
         if not self.bot_token or self.bot_token == "YOUR_BOT_TOKEN_HERE":
             self.logger.warning("Telegram not configured (skipping notification)")
@@ -162,6 +162,7 @@ class TelegramNotifier:
             message += f"🏪 Cheapest at: <b>{cheapest_shop}</b>\n"
             message += f"💵 Current price: <b>{current_price}€</b>"
             message += f"\n📈 Previous price: {previous_price}€"
+            message += f"\n🔗 Available at: <a href=\"{url}\">{url}</a>"
             
             payload = {
                 "chat_id": self.chat_id,
@@ -238,11 +239,11 @@ def main():
                     if is_first_tracking:
                         # First time tracking this item
                         updates.append((item_name, cheapest_shop, cheapest_price, "N/A (first tracking)"))
-                        notifier.send_price_update(item_name, cheapest_shop, cheapest_price, "N/A (first tracking)")
+                        notifier.send_price_update(item_name, cheapest_shop, cheapest_price, "N/A (first tracking)", url)
                     elif previous_price is not None and cheapest_price != previous_price:
                         # Price changed
                         updates.append((item_name, cheapest_shop, cheapest_price, previous_price))
-                        notifier.send_price_update(item_name, cheapest_shop, cheapest_price, previous_price)
+                        notifier.send_price_update(item_name, cheapest_shop, cheapest_price, previous_price, url)
             
             time.sleep(2)
         

@@ -92,7 +92,7 @@ crontab -e
 Add this line:
 
 ```
-0 * * * * cd /home/albert/programming/kurpirkt-price-parser && /usr/bin/python3 main.py
+0 * * * * cd /home/albert/programming/kurpirkt-price-parser && export $(cat .env | xargs) && /home/albert/programming/kurpirkt-price-parser/venv/bin/python main.py
 ```
 
 ## Logs
