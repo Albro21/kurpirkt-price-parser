@@ -1,4 +1,4 @@
-import requests
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import json
 from pathlib import Path
@@ -7,7 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import sys
-from fake_useragent import UserAgent
+import requests
 
 
 class PriceParser:
@@ -49,27 +49,63 @@ class PriceParser:
         return logger
     
     def parse_page(self, url, item_name):
-        """Parse prices from kurpirkt.lv page."""
+        """Parse prices from kurpirkt.lv page using Playwright to bypass Cloudflare."""
+        browser = None
         try:
             self.logger.info(f"Parsing: {item_name}")
             
-            # Generate random user agent
-            ua = UserAgent()
+            # Launch headless browser with stealth mode
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                    ]
+                )
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080}
+                )
+                page = context.new_page()
+                
+                # Add stealth script to avoid detection
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => false,
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5],
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en'],
+                    });
+                """)
+                
+                # Navigate to page and wait for content to load
+                self.logger.debug(f"Navigating to {url}")
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                
+                # Wait a bit for dynamic content
+                page.wait_for_timeout(5000)
+                
+                # Wait for price containers to appear
+                try:
+                    page.wait_for_selector('div.precebloks', timeout=30000)
+                except:
+                    self.logger.warning(f"Price containers not found for {item_name}, proceeding with available content")
+                
+                # Get page HTML after JS execution
+                html = page.content()
+                
+                # Debug: Log first 3000 characters of HTML
+                self.logger.debug(f"Page HTML for {item_name} (first 3000 chars):\n{html[:3000]}")
+                
+                page.close()
+                context.close()
+                browser.close()
             
-            headers = {
-                'User-Agent': ua.random,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Referer': 'https://www.kurpirkt.lv/',
-                'DNT': '1'
-            }
-            response = self.session.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
+            soup = BeautifulSoup(html, 'html.parser')
             containers = soup.find_all('div', class_="precebloks")
             
             if not containers:
@@ -89,11 +125,13 @@ class PriceParser:
             self.logger.info(f"✓ Successfully parsed {item_name}: {len(items_data)} shops found")
             return items_data
             
-        except requests.RequestException as e:
-            self.logger.error(f"Error fetching {item_name}: {e}")
-            return {}
         except Exception as e:
             self.logger.error(f"Error parsing {item_name}: {e}")
+            if browser:
+                try:
+                    browser.close()
+                except:
+                    pass
             return {}
     
     def save_to_json(self, data, filename):
