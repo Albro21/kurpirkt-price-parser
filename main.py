@@ -2,7 +2,6 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import json
 from pathlib import Path
-import time
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -262,14 +261,24 @@ def main():
                 
                 cheapest_shop, cheapest_price = PriceParser.get_cheapest_price(items_data)
                 previous_data = parser.load_previous_prices(filename)
-                previous_price = None
+                previous_cheapest_price = None
                 is_first_tracking = not previous_data
                 
-                if previous_data and cheapest_shop in previous_data:
+                # Get the previous cheapest price (might be from a different shop)
+                if previous_data:
                     try:
-                        previous_price = float(str(previous_data[cheapest_shop]).replace(',', '.'))
+                        # Find the cheapest price from previous data
+                        previous_prices = {}
+                        for shop, price in previous_data.items():
+                            try:
+                                numeric_price = float(str(price).replace(',', '.'))
+                                previous_prices[shop] = numeric_price
+                            except (ValueError, TypeError):
+                                continue
+                        if previous_prices:
+                            previous_cheapest_price = min(previous_prices.values())
                     except (ValueError, TypeError):
-                        previous_price = None
+                        previous_cheapest_price = None
                 
                 parser.save_to_json(items_data, filename)
                 
@@ -278,12 +287,32 @@ def main():
                         # First time tracking this item
                         updates.append((item_name, cheapest_shop, cheapest_price, "N/A (first tracking)"))
                         notifier.send_price_update(item_name, cheapest_shop, cheapest_price, "N/A (first tracking)", url)
-                    elif previous_price is not None and cheapest_price != previous_price:
-                        # Price changed
-                        updates.append((item_name, cheapest_shop, cheapest_price, previous_price))
-                        notifier.send_price_update(item_name, cheapest_shop, cheapest_price, previous_price, url)
-            
-            time.sleep(2)
+                    elif previous_cheapest_price is not None:
+                        if cheapest_price < previous_cheapest_price:
+                            # Price decreased (good news!)
+                            updates.append((item_name, cheapest_shop, cheapest_price, previous_cheapest_price))
+                            notifier.send_price_update(item_name, cheapest_shop, cheapest_price, previous_cheapest_price, url)
+                        elif cheapest_price > previous_cheapest_price:
+                            # Price increased (warning)
+                            message = f"⚠️ <b>Price increased</b>\n"
+                            message += f"💰 <b>{item_name}</b>\n"
+                            message += f"🏪 Cheapest at: <b>{cheapest_shop}</b>\n"
+                            message += f"💵 Current price: <b>{cheapest_price}€</b>"
+                            message += f"\n📈 Previous price: {previous_cheapest_price}€"
+                            message += f"\n🔗 Available at: <a href=\"{url}\">{url}</a>"
+                            
+                            try:
+                                payload = {
+                                    "chat_id": notifier.chat_id,
+                                    "text": message,
+                                    "parse_mode": "HTML"
+                                }
+                                response = requests.post(notifier.api_url, json=payload, timeout=10)
+                                if response.status_code == 200:
+                                    parser.logger.info(f"Price increase notification sent for {item_name}")
+                                    updates.append((item_name, cheapest_shop, cheapest_price, previous_cheapest_price))
+                            except Exception as e:
+                                parser.logger.error(f"Error sending price increase notification for {item_name}: {e}")
         
         if not updates:
             parser.logger.info("No price updates detected for any items")
