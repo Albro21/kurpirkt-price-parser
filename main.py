@@ -18,7 +18,7 @@ class PriceParser:
     
     def _setup_logging(self, log_file):
         """Setup logging to file and console."""
-        logger = logging.getLogger("salidzini_parser")
+        logger = logging.getLogger("kurpirkt_parser")
         logger.setLevel(logging.DEBUG)
         
         log_path = Path(log_file)
@@ -119,7 +119,11 @@ class PriceParser:
                 price_elem = container.find('div', class_="price")
                 price = price_elem.get_text(strip=True) if price_elem else "N/A"
                 
-                items_data[shop_name] = price
+                # Only add if not Unknown Shop and not N/A
+                if shop_name != "Unknown Shop" and price != "N/A":
+                    # Remove asterisk from price when saving
+                    clean_price = price.replace('*', '').strip()
+                    items_data[shop_name] = clean_price
             
             self.logger.info(f"✓ Successfully parsed {item_name}: {len(items_data)} shops found")
             return items_data
@@ -166,7 +170,9 @@ class PriceParser:
         prices = {}
         for shop, price in items_data.items():
             try:
-                numeric_price = float(''.join(c for c in price if c.isdigit() or c == '.'))
+                # Remove € and * symbols, split on comma/dot for decimals
+                clean_price = price.replace('€', '').replace('*', '').strip()
+                numeric_price = float(clean_price.replace(',', '.'))
                 prices[shop] = numeric_price
             except (ValueError, AttributeError):
                 continue
@@ -248,6 +254,8 @@ def main():
     parser.logger.info("=" * 50)
     parser.logger.info("Starting price parser")
     parser.logger.info("=" * 50)
+    parser.logger.debug(f"Telegram Bot Token set: {bool(notifier.bot_token)}")
+    parser.logger.debug(f"Telegram Chat ID set: {bool(notifier.chat_id)}")
     
     try:
         updates = []
@@ -264,6 +272,8 @@ def main():
                 previous_cheapest_price = None
                 is_first_tracking = not previous_data
                 
+                parser.logger.debug(f"Loaded previous data from {filename}: {previous_data}")
+                
                 # Get the previous cheapest price (might be from a different shop)
                 if previous_data:
                     try:
@@ -271,29 +281,40 @@ def main():
                         previous_prices = {}
                         for shop, price in previous_data.items():
                             try:
-                                numeric_price = float(str(price).replace(',', '.'))
+                                # Clean price: remove €, *, spaces and convert
+                                clean_price = str(price).replace('€', '').replace('*', '').strip()
+                                numeric_price = float(clean_price.replace(',', '.'))
                                 previous_prices[shop] = numeric_price
                             except (ValueError, TypeError):
                                 continue
+                        parser.logger.debug(f"Previous prices dict: {previous_prices}")
                         if previous_prices:
                             previous_cheapest_price = min(previous_prices.values())
-                    except (ValueError, TypeError):
+                            parser.logger.debug(f"Previous cheapest price: {previous_cheapest_price}")
+                    except (ValueError, TypeError) as e:
+                        parser.logger.error(f"Error extracting previous prices: {e}")
                         previous_cheapest_price = None
                 
                 parser.save_to_json(items_data, filename)
                 
+                parser.logger.info(f"Cheapest shop: {cheapest_shop}, Current price: {cheapest_price}")
+                parser.logger.info(f"Previous cheapest price: {previous_cheapest_price}")
+                
                 if cheapest_shop and cheapest_price:
                     if is_first_tracking:
                         # First time tracking this item
+                        parser.logger.info(f"First tracking for {item_name}")
                         updates.append((item_name, cheapest_shop, cheapest_price, "N/A (first tracking)"))
                         notifier.send_price_update(item_name, cheapest_shop, cheapest_price, "N/A (first tracking)", url)
                     elif previous_cheapest_price is not None:
                         if cheapest_price < previous_cheapest_price:
                             # Price decreased (good news!)
+                            parser.logger.info(f"Price DECREASED for {item_name}: {previous_cheapest_price}€ → {cheapest_price}€")
                             updates.append((item_name, cheapest_shop, cheapest_price, previous_cheapest_price))
                             notifier.send_price_update(item_name, cheapest_shop, cheapest_price, previous_cheapest_price, url)
                         elif cheapest_price > previous_cheapest_price:
                             # Price increased (warning)
+                            parser.logger.info(f"Price INCREASED for {item_name}: {previous_cheapest_price}€ → {cheapest_price}€")
                             message = f"⚠️ <b>Price increased</b>\n"
                             message += f"💰 <b>{item_name}</b>\n"
                             message += f"🏪 Cheapest at: <b>{cheapest_shop}</b>\n"
@@ -311,8 +332,12 @@ def main():
                                 if response.status_code == 200:
                                     parser.logger.info(f"Price increase notification sent for {item_name}")
                                     updates.append((item_name, cheapest_shop, cheapest_price, previous_cheapest_price))
+                                else:
+                                    parser.logger.error(f"Failed to send price increase notification: {response.status_code}")
                             except Exception as e:
                                 parser.logger.error(f"Error sending price increase notification for {item_name}: {e}")
+                        else:
+                            parser.logger.info(f"Price unchanged for {item_name}: {cheapest_price}€")
         
         if not updates:
             parser.logger.info("No price updates detected for any items")
